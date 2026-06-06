@@ -96,11 +96,19 @@ jobs:
             "$GITHUB_WORKSPACE/device-tree/" \
             "$GITHUB_WORKSPACE/OrangeFox/device/xiaomi/rodin/"
 
+      - name: Free sync metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE/OrangeFox/.repo" "$GITHUB_WORKSPACE/ofox-sync"
+          df -h "$GITHUB_WORKSPACE" /
+          du -sh "$GITHUB_WORKSPACE/OrangeFox" || true
+
       - name: Prepare swap
         shell: bash
         run: |
           set -euo pipefail
-          sudo fallocate -l 12G /swap-build.img
+          sudo fallocate -l 8G /swap-build.img
           sudo chmod 600 /swap-build.img
           sudo mkswap /swap-build.img
           sudo swapon /swap-build.img
@@ -126,11 +134,11 @@ jobs:
           GOMEMLIMIT: "4GiB"
           _JAVA_OPTIONS: "-Xmx1g"
           LC_ALL: C
-          USE_CCACHE: "1"
+          USE_CCACHE: "0"
           CCACHE_EXEC: /usr/bin/ccache
         run: |
           set -eo pipefail
-          ccache -M 20G || true
+          ccache -M 5G || true
           source build/envsetup.sh
           lunch "${{ inputs.lunch }}"
           mka -j"${OF_BUILD_JOBS}" adbd "${{ inputs.build_target }}" 2>&1 | tee "$GITHUB_WORKSPACE/orangefox-build.log"
