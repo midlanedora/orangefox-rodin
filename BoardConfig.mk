@@ -13,6 +13,10 @@ TARGET_NO_BOOTLOADER := true
 TARGET_NO_RADIOIMAGE := true
 TARGET_NO_KERNEL := false
 
+# Android 14 rejects ELF prebuilts under PRODUCT_COPY_FILES. The rodin
+# recovery ramdisk needs the stock kernel modules copied under /lib/modules.
+BUILD_BROKEN_ELF_PREBUILT_PRODUCT_COPY_FILES := true
+
 TARGET_RECOVERY_PIXEL_FORMAT := "BGRA_8888"
 TARGET_RECOVERY_FSTAB := $(DEVICE_PATH)/recovery/root/system/etc/recovery.fstab
 
