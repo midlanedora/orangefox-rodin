@@ -104,7 +104,7 @@ jobs:
           USE_CCACHE: "1"
           CCACHE_EXEC: /usr/bin/ccache
         run: |
-          set -euo pipefail
+          set -eo pipefail
           ccache -M 50G || true
           source build/envsetup.sh
           lunch "${{ inputs.lunch }}"
