@@ -1,173 +1,192 @@
 name: OrangeFox Recovery
 
 on:
-  workflow_dispatch:
-    inputs:
-      branch:
-        description: OrangeFox sync branch
-        required: true
-        default: "14.1"
-      lunch:
-        description: Lunch target
-        required: true
-        default: "twrp_rodin-ap2a-eng"
-      build_target:
-        description: Build target
-        required: true
-        default: "vendorbootimage"
-      runner:
-        description: Runner label. Use ubuntu-latest-16-cores only after enabling GitHub larger runners, or use a 64GB self-hosted label.
-        required: true
-        default: "ubuntu-latest"
-      build_jobs:
-        description: Parallel build jobs. Use 8 for 64GB runners, 1 for ubuntu-latest/self-hosted low-memory.
-        required: true
-        default: "1"
+workflow_dispatch:
+inputs:
+branch:
+description: OrangeFox sync branch
+required: true
+default: "14.1"
+
+```
+  lunch:
+    description: Lunch target
+    required: true
+    default: "twrp_rodin-eng"
+
+  build_target:
+    description: Build target
+    required: true
+    default: "vendorbootimage"
+
+  runner:
+    description: Runner label
+    required: true
+    default: "ubuntu-latest"
+
+  build_jobs:
+    description: Parallel build jobs
+    required: true
+    default: "1"
+```
 
 jobs:
-  build:
-    runs-on: ${{ inputs.runner }}
-    timeout-minutes: 720
+build:
+runs-on: ${{ inputs.runner }}
+timeout-minutes: 720
 
-    steps:
-      - name: Checkout device tree
-        uses: actions/checkout@v4
-        with:
-          path: device-tree
+```
+steps:
+  - name: Checkout device tree
+    uses: actions/checkout@v4
+    with:
+      path: device-tree
 
-      - name: Install host packages
-        shell: bash
-        run: |
-          set -euo pipefail
-          if command -v sudo >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y \
-              bc bison build-essential ccache curl flex g++-multilib gcc-multilib \
-              git gnupg gperf imagemagick lib32ncurses-dev lib32readline-dev \
-              lib32z1-dev libelf-dev liblz4-tool libncurses-dev libsdl1.2-dev \
-              libssl-dev libxml2 libxml2-utils lz4 pngcrush rsync schedtool \
-              squashfs-tools unzip xsltproc zip zlib1g-dev
-          fi
+  - name: Install host packages
+    shell: bash
+    run: |
+      set -euo pipefail
+      sudo apt-get update
+      sudo apt-get install -y \
+        bc bison build-essential ccache curl flex g++-multilib gcc-multilib \
+        git gnupg gperf imagemagick lib32ncurses-dev lib32readline-dev \
+        lib32z1-dev libelf-dev liblz4-tool libncurses-dev libsdl1.2-dev \
+        libssl-dev libxml2 libxml2-utils lz4 pngcrush rsync schedtool \
+        squashfs-tools unzip xsltproc zip zlib1g-dev
 
-      - name: Install repo tool
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$HOME/bin"
-          curl -L https://storage.googleapis.com/git-repo-downloads/repo -o "$HOME/bin/repo"
-          chmod +x "$HOME/bin/repo"
-          echo "$HOME/bin" >> "$GITHUB_PATH"
+  - name: Install repo tool
+    shell: bash
+    run: |
+      set -euo pipefail
+      mkdir -p "$HOME/bin"
+      curl -L https://storage.googleapis.com/git-repo-downloads/repo -o "$HOME/bin/repo"
+      chmod +x "$HOME/bin/repo"
+      echo "$HOME/bin" >> "$GITHUB_PATH"
 
-      - name: Show runner disk space
-        shell: bash
-        run: |
-          set -euo pipefail
+  - name: Show runner resources
+    shell: bash
+    run: |
+      df -h
+      free -h
+
+  - name: Sync OrangeFox
+    shell: bash
+    run: |
+      set -euo pipefail
+
+      (
+        while sleep 60; do
+          echo "Heartbeat..."
           df -h
           free -h
-          mem_gib="$(awk '/^MemTotal:/ { printf "%d", $2 / 1024 / 1024 }' /proc/meminfo)"
-          if [ "${mem_gib}" -lt 60 ]; then
-            echo "::warning::Runner has ${mem_gib}GiB RAM, not 64GiB. Use ubuntu-latest-16-cores or a 64GB self-hosted runner for the requested memory."
-          fi
+        done
+      ) &
+      HEARTBEAT_PID=$!
 
-      - name: Sync OrangeFox
-        shell: bash
-        run: |
-          set -euo pipefail
-          (
-            while sleep 60; do
-              echo "Sync heartbeat:"
-              df -h "$GITHUB_WORKSPACE" /
-              free -h
-            done
-          ) &
-          heartbeat_pid=$!
-          trap 'kill "${heartbeat_pid}" 2>/dev/null || true' EXIT
-          mkdir -p "$GITHUB_WORKSPACE/ofox-sync"
-          git clone https://gitlab.com/OrangeFox/sync.git "$GITHUB_WORKSPACE/ofox-sync/sync"
-          cd "$GITHUB_WORKSPACE/ofox-sync/sync"
-          ./orangefox_sync.sh \
-            --branch "${{ inputs.branch }}" \
-            --path "$GITHUB_WORKSPACE/OrangeFox"
-          kill "${heartbeat_pid}" 2>/dev/null || true
-          trap - EXIT
-          df -h "$GITHUB_WORKSPACE" /
-          du -sh "$GITHUB_WORKSPACE/OrangeFox" || true
+      git clone https://gitlab.com/OrangeFox/sync.git "$GITHUB_WORKSPACE/ofox-sync"
+      cd "$GITHUB_WORKSPACE/ofox-sync"
 
-      - name: Place rodin device tree
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$GITHUB_WORKSPACE/OrangeFox/device/xiaomi"
-          rsync -a --delete \
-            --exclude ".git" \
-            --exclude "images" \
-            "$GITHUB_WORKSPACE/device-tree/" \
-            "$GITHUB_WORKSPACE/OrangeFox/device/xiaomi/rodin/"
+      ./orangefox_sync.sh \
+        --branch "${{ inputs.branch }}" \
+        --path "$GITHUB_WORKSPACE/OrangeFox"
 
-      - name: Free sync metadata
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm -rf "$GITHUB_WORKSPACE/OrangeFox/.repo" "$GITHUB_WORKSPACE/ofox-sync"
-          df -h "$GITHUB_WORKSPACE" /
-          du -sh "$GITHUB_WORKSPACE/OrangeFox" || true
+      kill $HEARTBEAT_PID || true
 
-      - name: Prepare swap
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo fallocate -l 8G /swap-build.img
-          sudo chmod 600 /swap-build.img
-          sudo mkswap /swap-build.img
-          sudo swapon /swap-build.img
-          df -h "$GITHUB_WORKSPACE" /
-          free -h
+  - name: Copy rodin device tree
+    shell: bash
+    run: |
+      set -euo pipefail
 
-      - name: Build OrangeFox
-        shell: bash
-        working-directory: ${{ github.workspace }}/OrangeFox
-        env:
-          ALLOW_MISSING_DEPENDENCIES: "true"
-          FOX_BUILD_DEVICE: rodin
-          FOX_AB_DEVICE: "1"
-          FOX_VIRTUAL_AB_DEVICE: "1"
-          OF_FORCE_PREBUILT_KERNEL: "1"
-          OF_LOW_MEMORY_BUILD: "1"
-          OF_BUILD_JOBS: ${{ inputs.build_jobs }}
-          NINJA_ARGS: -j${{ inputs.build_jobs }} -l${{ inputs.build_jobs }}
-          SOONG_UI_NINJA_ARGS: -j${{ inputs.build_jobs }} -l${{ inputs.build_jobs }}
-          NINJA_HIGHMEM_NUM_JOBS: "2"
-          GOMAXPROCS: ${{ inputs.build_jobs }}
-          GOGC: "20"
-          GOMEMLIMIT: "16GiB"
-          _JAVA_OPTIONS: "-Xmx4g"
-          LC_ALL: C
-          USE_CCACHE: "0"
-          CCACHE_EXEC: /usr/bin/ccache
-        run: |
-          set -eo pipefail
-          ccache -M 5G || true
-          source build/envsetup.sh
-          lunch "${{ inputs.lunch }}"
-          mka -j"${OF_BUILD_JOBS}" adbd "${{ inputs.build_target }}" 2>&1 | tee "$GITHUB_WORKSPACE/orangefox-build.log"
+      mkdir -p "$GITHUB_WORKSPACE/OrangeFox/device/xiaomi"
 
-      - name: Collect artifacts
-        if: always()
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$GITHUB_WORKSPACE/artifacts"
-          if [ -d "$GITHUB_WORKSPACE/OrangeFox/out/target/product/rodin" ]; then
-            find "$GITHUB_WORKSPACE/OrangeFox/out/target/product/rodin" \
-              -maxdepth 1 -type f \( -name "*.img" -o -name "*.zip" -o -name "*.txt" \) \
-              -exec cp -v {} "$GITHUB_WORKSPACE/artifacts/" \;
-          fi
-          cp -v "$GITHUB_WORKSPACE/orangefox-build.log" "$GITHUB_WORKSPACE/artifacts/" || true
+      rsync -a --delete \
+        --exclude ".git" \
+        --exclude "images" \
+        "$GITHUB_WORKSPACE/device-tree/" \
+        "$GITHUB_WORKSPACE/OrangeFox/device/xiaomi/rodin/"
 
-      - name: Upload artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: orangefox-rodin
-          path: artifacts
-          if-no-files-found: warn
+  - name: Verify vendor ramdisk fragment
+    shell: bash
+    run: |
+      set -euo pipefail
+
+      ls -lh "$GITHUB_WORKSPACE/OrangeFox/device/xiaomi/rodin/prebuilt/vendor_ramdisk00"
+
+  - name: Free space
+    shell: bash
+    run: |
+      rm -rf "$GITHUB_WORKSPACE/OrangeFox/.repo"
+      rm -rf "$GITHUB_WORKSPACE/ofox-sync"
+      df -h
+
+  - name: Create swap
+    shell: bash
+    run: |
+      sudo fallocate -l 8G /swapfile
+      sudo chmod 600 /swapfile
+      sudo mkswap /swapfile
+      sudo swapon /swapfile
+      free -h
+
+  - name: Build OrangeFox
+    shell: bash
+    working-directory: ${{ github.workspace }}/OrangeFox
+    env:
+      ALLOW_MISSING_DEPENDENCIES: "true"
+      FOX_BUILD_DEVICE: rodin
+      FOX_AB_DEVICE: "1"
+      FOX_VIRTUAL_AB_DEVICE: "1"
+      OF_FORCE_PREBUILT_KERNEL: "1"
+      OF_LOW_MEMORY_BUILD: "1"
+      OF_BUILD_JOBS: ${{ inputs.build_jobs }}
+      NINJA_ARGS: -j${{ inputs.build_jobs }}
+      SOONG_UI_NINJA_ARGS: -j${{ inputs.build_jobs }}
+      USE_CCACHE: "0"
+    run: |
+      set -eo pipefail
+
+      source build/envsetup.sh
+
+      lunch "${{ inputs.lunch }}"
+
+      mka -j"${OF_BUILD_JOBS}" \
+        adbd \
+        "${{ inputs.build_target }}" \
+        2>&1 | tee "$GITHUB_WORKSPACE/orangefox-build.log"
+
+  - name: Check vendor_boot result
+    if: always()
+    shell: bash
+    run: |
+      if [ -f "$GITHUB_WORKSPACE/OrangeFox/out/target/product/rodin/vendor_boot.img" ]; then
+        sudo apt-get install -y mkbootimg
+        unpack_bootimg \
+          --boot_img "$GITHUB_WORKSPACE/OrangeFox/out/target/product/rodin/vendor_boot.img" \
+          | tee "$GITHUB_WORKSPACE/vendor_boot_info.txt"
+      fi
+
+  - name: Collect artifacts
+    if: always()
+    shell: bash
+    run: |
+      mkdir -p "$GITHUB_WORKSPACE/artifacts"
+
+      if [ -d "$GITHUB_WORKSPACE/OrangeFox/out/target/product/rodin" ]; then
+        find "$GITHUB_WORKSPACE/OrangeFox/out/target/product/rodin" \
+          -maxdepth 1 \
+          -type f \
+          \( -name "*.img" -o -name "*.zip" -o -name "*.txt" \) \
+          -exec cp -v {} "$GITHUB_WORKSPACE/artifacts/" \;
+      fi
+
+      cp -v "$GITHUB_WORKSPACE/orangefox-build.log" "$GITHUB_WORKSPACE/artifacts/" || true
+      cp -v "$GITHUB_WORKSPACE/vendor_boot_info.txt" "$GITHUB_WORKSPACE/artifacts/" || true
+
+  - name: Upload artifacts
+    if: always()
+    uses: actions/upload-artifact@v4
+    with:
+      name: orangefox-rodin
+      path: artifacts
+      if-no-files-found: warn
+```
