@@ -10,7 +10,7 @@ on:
       lunch:
         description: Lunch target
         required: true
-        default: "twrp_rodin-eng"
+        default: "twrp_rodin-ap2a-eng"
       build_target:
         description: Build target
         required: true
