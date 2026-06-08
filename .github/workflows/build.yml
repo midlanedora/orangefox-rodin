@@ -14,7 +14,7 @@ on:
       build_target:
         description: Build target
         required: true
-        default: "vendorbootimage"
+        default: "recoveryimage"
       runner:
         description: Runner label
         required: true
@@ -111,6 +111,7 @@ jobs:
           rm -rf "$GITHUB_WORKSPACE/OrangeFox/.repo"
           rm -rf "$GITHUB_WORKSPACE/ofox-sync"
           df -h
+          free -h
 
       - name: Build OrangeFox
         shell: bash
@@ -122,23 +123,19 @@ jobs:
           FOX_VIRTUAL_AB_DEVICE: "1"
           OF_FORCE_PREBUILT_KERNEL: "1"
           OF_LOW_MEMORY_BUILD: "1"
-          OF_BUILD_JOBS: ${{ inputs.build_jobs }}
-          NINJA_ARGS: -j${{ inputs.build_jobs }}
-          SOONG_UI_NINJA_ARGS: -j${{ inputs.build_jobs }}
+          OF_BUILD_JOBS: "1"
+          NINJA_ARGS: "-j1 -l1"
+          SOONG_UI_NINJA_ARGS: "-j1 -l1"
           USE_CCACHE: "0"
+          GOMAXPROCS: "1"
+          GOGC: "20"
+          GOMEMLIMIT: "3GiB"
+          _JAVA_OPTIONS: "-Xmx3g"
         run: |
           set -eo pipefail
           source build/envsetup.sh
           lunch "${{ inputs.lunch }}"
-
-          mka -j"${OF_BUILD_JOBS}" adbd "${{ inputs.build_target }}" 2>&1 | tee "$GITHUB_WORKSPACE/orangefox-build.log"
-
-          PRODUCT="$GITHUB_WORKSPACE/OrangeFox/out/target/product/rodin"
-
-          if [ ! -f "$PRODUCT/vendor_ramdisk_recovery.cpio" ]; then
-            echo "vendor_ramdisk_recovery.cpio not found after vendorbootimage, trying recoveryimage..."
-            mka -j"${OF_BUILD_JOBS}" recoveryimage 2>&1 | tee -a "$GITHUB_WORKSPACE/orangefox-build.log"
-          fi
+          mka -j1 adbd "${{ inputs.build_target }}" 2>&1 | tee "$GITHUB_WORKSPACE/orangefox-build.log"
 
       - name: Locate recovery ramdisk
         if: always()
@@ -147,8 +144,7 @@ jobs:
           set -euo pipefail
           PRODUCT="$GITHUB_WORKSPACE/OrangeFox/out/target/product/rodin"
 
-          echo "Listing product output:"
-          find "$PRODUCT" -maxdepth 3 -type f | sort | tee "$GITHUB_WORKSPACE/product_files.txt" || true
+          find "$PRODUCT" -maxdepth 4 -type f | sort | tee "$GITHUB_WORKSPACE/product_files.txt" || true
 
           RECOVERY_CPIO=""
 
@@ -170,17 +166,7 @@ jobs:
           fi
 
           echo "$RECOVERY_CPIO" > "$GITHUB_WORKSPACE/recovery_cpio_path.txt"
-          echo "Using recovery ramdisk: $RECOVERY_CPIO"
           ls -lh "$RECOVERY_CPIO"
-
-      - name: Check original build vendor_boot result
-        if: always()
-        shell: bash
-        run: |
-          PRODUCT="$GITHUB_WORKSPACE/OrangeFox/out/target/product/rodin"
-          if [ -f "$PRODUCT/vendor_boot.img" ]; then
-            unpack_bootimg --boot_img "$PRODUCT/vendor_boot.img" | tee "$GITHUB_WORKSPACE/vendor_boot_info.txt" || true
-          fi
 
       - name: Repack stock vendor_boot with OrangeFox recovery
         shell: bash
@@ -199,7 +185,6 @@ jobs:
           unpack_bootimg --boot_img "$STOCK" --out "$UNPACK"
 
           RUNNER_MKBOOTIMG="$(command -v mkbootimg)"
-          echo "Using mkbootimg: $RUNNER_MKBOOTIMG"
 
           "$RUNNER_MKBOOTIMG" \
             --vendor_boot "$OUT" \
@@ -218,7 +203,6 @@ jobs:
         shell: bash
         run: |
           mkdir -p "$GITHUB_WORKSPACE/artifacts"
-
           PRODUCT="$GITHUB_WORKSPACE/OrangeFox/out/target/product/rodin"
 
           if [ -d "$PRODUCT" ]; then
@@ -230,7 +214,6 @@ jobs:
           fi
 
           cp -v "$GITHUB_WORKSPACE/orangefox-build.log" "$GITHUB_WORKSPACE/artifacts/" || true
-          cp -v "$GITHUB_WORKSPACE/vendor_boot_info.txt" "$GITHUB_WORKSPACE/artifacts/" || true
           cp -v "$GITHUB_WORKSPACE/vendor_boot_patched_info.txt" "$GITHUB_WORKSPACE/artifacts/" || true
           cp -v "$GITHUB_WORKSPACE/product_files.txt" "$GITHUB_WORKSPACE/artifacts/" || true
           cp -v "$GITHUB_WORKSPACE/recovery_cpio_path.txt" "$GITHUB_WORKSPACE/artifacts/" || true
