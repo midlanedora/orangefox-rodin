@@ -14,7 +14,7 @@ PRODUCT_VIRTUAL_AB_COMPRESSION := true
 # OrangeFox 14.1 is Android 14 based and only exposes SystemSDK up to 34.
 # The analyzed stock firmware remains Android 16; this value keeps the
 # recovery build system compatible.
-PRODUCT_SHIPPING_API_LEVEL := 31
+PRODUCT_SHIPPING_API_LEVEL := 34
 
 PRODUCT_PROPERTY_OVERRIDES += \
     ro.product.device=rodin \
