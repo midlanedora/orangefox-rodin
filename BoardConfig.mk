@@ -113,6 +113,9 @@ TW_INCLUDE_EROFS := true
 TW_HAS_MTP := true
 TW_MTP_DEVICE := /dev/mtp_usb
 TW_NO_USB_STORAGE := true
+TW_BRIGHTNESS_PATH := "/sys/class/leds/lcd-backlight/brightness"
+TW_MAX_BRIGHTNESS := 2020
+TW_DEFAULT_BRIGHTNESS := 1200
 RECOVERY_SDCARD_ON_DATA := true
 BOARD_HAS_LARGE_FILESYSTEM := true
 
