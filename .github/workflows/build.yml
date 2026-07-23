@@ -45,7 +45,7 @@ jobs:
             git gnupg gperf imagemagick lib32ncurses-dev lib32readline-dev \
             lib32z1-dev libelf-dev liblz4-tool libncurses-dev libsdl1.2-dev \
             libssl-dev libxml2 libxml2-utils lz4 pngcrush rsync schedtool \
-            squashfs-tools unzip xsltproc zip zlib1g-dev mkbootimg python3-gki
+            squashfs-tools unzip xsltproc zip zlib1g-dev mkbootimg
 
       - name: Install repo tool
         shell: bash
