@@ -12,10 +12,6 @@ export FOX_USE_ZIP_BINARY=1
 export FOX_USE_LZ4_BINARY=1
 export OF_FORCE_PREBUILT_KERNEL=1
 export OF_USE_LZ4_COMPRESSION=1
-export OF_DISABLE_MIUI_OTA_BY_DEFAULT := 1
-export BOARD_VENDORRAMDISK_USE_LZMA := 1
-export OF_SKIP_CRYPTO_LIBS := 1  
-export BOARD_BOOTCONFIG := bootopt=64S3,32N2,64N2
 
 # Keep local OrangeFox builds usable on very low-memory machines.
 export OF_LOW_MEMORY_BUILD="${OF_LOW_MEMORY_BUILD:-1}"
