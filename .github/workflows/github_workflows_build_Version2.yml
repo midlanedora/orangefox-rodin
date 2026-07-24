@@ -1,4 +1,4 @@
-name: OrangeFox Recovery
+name: OrangeFox Recovery V2
 
 on:
   workflow_dispatch:
