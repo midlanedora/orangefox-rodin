@@ -1,0 +1,344 @@
+name: OrangeFox Recovery
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: OrangeFox sync branch
+        required: true
+        default: "14.1"
+      lunch:
+        description: Lunch target
+        required: true
+        default: "twrp_rodin-ap2a-eng"
+      build_target:
+        description: Build target
+        required: true
+        default: "vendorbootimage"
+      runner:
+        description: Runner label
+        required: true
+        default: "ubuntu-latest"
+      build_jobs:
+        description: Parallel build jobs
+        required: true
+        default: "1"
+
+jobs:
+  build:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 720
+
+    steps:
+      - name: Checkout device tree
+        uses: actions/checkout@v4
+        with:
+          path: device-tree
+
+      - name: Install host packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison build-essential ccache curl flex g++-multilib gcc-multilib \
+            git gnupg gperf imagemagick lib32ncurses-dev lib32readline-dev \
+            lib32z1-dev libelf-dev liblz4-tool libncurses-dev libsdl1.2-dev \
+            libssl-dev libxml2 libxml2-utils lz4 pngcrush rsync schedtool \
+            squashfs-tools unzip xsltproc zip zlib1g-dev mkbootimg cpio
+
+      - name: Install repo tool
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/bin"
+          curl -L https://storage.googleapis.com/git-repo-downloads/repo -o "$HOME/bin/repo"
+          chmod +x "$HOME/bin/repo"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Show runner resources
+        shell: bash
+        run: |
+          df -h
+          free -h
+
+      - name: Sync OrangeFox
+        shell: bash
+        run: |
+          set -euo pipefail
+          (
+            while sleep 60; do
+              echo "Heartbeat..."
+              df -h
+              free -h
+            done
+          ) &
+          HEARTBEAT_PID=$!
+          trap 'kill "$HEARTBEAT_PID" 2>/dev/null || true' EXIT
+
+          git clone https://gitlab.com/OrangeFox/sync.git "$GITHUB_WORKSPACE/ofox-sync"
+          cd "$GITHUB_WORKSPACE/ofox-sync"
+
+          ./orangefox_sync.sh \
+            --branch "${{ inputs.branch }}" \
+            --path "$GITHUB_WORKSPACE/OrangeFox"
+
+          kill "$HEARTBEAT_PID" 2>/dev/null || true
+          trap - EXIT
+
+      - name: Copy rodin device tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/OrangeFox/device/xiaomi"
+
+          rsync -a --delete \
+            --exclude ".git" \
+            --exclude "images" \
+            "$GITHUB_WORKSPACE/device-tree/" \
+            "$GITHUB_WORKSPACE/OrangeFox/device/xiaomi/rodin/"
+
+      - name: Verify prebuilts
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -lh "$GITHUB_WORKSPACE/OrangeFox/device/xiaomi/rodin/prebuilt/vendor_boot_stock.img"
+          ls -lh "$GITHUB_WORKSPACE/OrangeFox/device/xiaomi/rodin/prebuilt/vendor_ramdisk00" || true
+
+      - name: Free space
+        shell: bash
+        run: |
+          rm -rf "$GITHUB_WORKSPACE/OrangeFox/.repo"
+          rm -rf "$GITHUB_WORKSPACE/ofox-sync"
+          df -h
+          free -h
+
+      - name: Build OrangeFox
+        shell: bash
+        working-directory: ${{ github.workspace }}/OrangeFox
+        env:
+          ALLOW_MISSING_DEPENDENCIES: "true"
+          FOX_BUILD_DEVICE: rodin
+          FOX_AB_DEVICE: "1"
+          FOX_VIRTUAL_AB_DEVICE: "1"
+          OF_FORCE_PREBUILT_KERNEL: "1"
+          OF_LOW_MEMORY_BUILD: "1"
+          OF_BUILD_JOBS: "1"
+          NINJA_ARGS: "-j1 -l1"
+          SOONG_UI_NINJA_ARGS: "-j1 -l1"
+          USE_CCACHE: "0"
+          GOMAXPROCS: "1"
+          GOGC: "20"
+          GOMEMLIMIT: "3GiB"
+          _JAVA_OPTIONS: "-Xmx3g"
+        run: |
+          set -eo pipefail
+          source build/envsetup.sh
+          lunch "${{ inputs.lunch }}"
+          mka -j1 adbd vendorbootimage 2>&1 | tee "$GITHUB_WORKSPACE/orangefox-build.log"
+      - name: Locate recovery ramdisk
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          PRODUCT="$GITHUB_WORKSPACE/OrangeFox/out/target/product/rodin"
+
+          find "$PRODUCT" -maxdepth 4 -type f | sort | tee "$GITHUB_WORKSPACE/product_files.txt" || true
+
+          RECOVERY_CPIO=""
+
+          for f in \
+            "$PRODUCT/vendor_ramdisk_recovery.cpio" \
+            "$PRODUCT/obj/PACKAGING/vendor_ramdisk_fragments_intermediates/recovery.cpio.lz4" \
+            "$PRODUCT/obj/PACKAGING/vendor_boot_intermediates/vendor_ramdisk.cpio.lz4" \
+            "$PRODUCT/ramdisk-recovery.img"
+          do
+            if [ -f "$f" ]; then
+              RECOVERY_CPIO="$f"
+              break
+            fi
+          done
+
+          if [ -z "$RECOVERY_CPIO" ]; then
+            echo "::error::No recovery ramdisk found"
+            exit 1
+          fi
+
+          echo "$RECOVERY_CPIO" > "$GITHUB_WORKSPACE/recovery_cpio_path.txt"
+          ls -lh "$RECOVERY_CPIO"
+
+      - name: Repack stock vendor_boot with OrangeFox recovery (prune to fit 64MiB)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PRODUCT="$GITHUB_WORKSPACE/OrangeFox/out/target/product/rodin"
+          STOCK="$GITHUB_WORKSPACE/OrangeFox/device/xiaomi/rodin/prebuilt/vendor_boot_stock.img"
+          RECOVERY_CPIO="$(cat "$GITHUB_WORKSPACE/recovery_cpio_path.txt")"
+          OUT="$PRODUCT/vendor_boot_patched.img"
+          UNPACK="$PRODUCT/stock_vendor_boot"
+          TMP="$PRODUCT/vendor_ramdisk_work"
+          LIMIT_BYTES=67108864
+
+          rm -rf "$UNPACK" "$TMP"
+          mkdir -p "$UNPACK" "$TMP"
+
+          # unpack stock vendor boot
+          unpack_bootimg --boot_img "$STOCK" --out "$UNPACK"
+
+          VENDOR_RAM="$UNPACK/vendor_ramdisk00"
+          if [ ! -e "$VENDOR_RAM" ]; then
+            echo "::warning::No vendor_ramdisk00 found in stock; listing $UNPACK:"
+            ls -la "$UNPACK"
+            exit 1
+          fi
+
+          # decompress vendor ramdisk if lz4
+          mkdir -p "$TMP/stock_ramdisk"
+          if file "$VENDOR_RAM" | grep -qi lz4; then
+            lz4 -d "$VENDOR_RAM" "$TMP/stock_ramdisk/stock_ramdisk.cpio"
+          else
+            cp "$VENDOR_RAM" "$TMP/stock_ramdisk/stock_ramdisk.cpio"
+          fi
+
+          # extract stock ramdisk
+          mkdir -p "$TMP/stock_ramdisk/root_stock"
+          (cd "$TMP/stock_ramdisk/root_stock" && cpio -idm --no-absolute-filenames < ../stock_ramdisk.cpio) || true
+
+          # extract recovery cpio
+          mkdir -p "$TMP/recovery_ramdisk"
+          if file "$RECOVERY_CPIO" | grep -qi lz4; then
+            lz4 -d "$RECOVERY_CPIO" "$TMP/recovery_ramdisk/recovery.cpio"
+          else
+            cp "$RECOVERY_CPIO" "$TMP/recovery_ramdisk/recovery.cpio"
+          fi
+          mkdir -p "$TMP/recovery_ramdisk/root_recovery"
+          (cd "$TMP/recovery_ramdisk/root_recovery" && cpio -idm --no-absolute-filenames < ../recovery.cpio) || true
+
+          # merge recovery into stock (recovery overrides stock)
+          rsync -a --delete "$TMP/recovery_ramdisk/root_recovery/" "$TMP/stock_ramdisk/root_stock/"
+
+          echo "Largest files in merged vendor ramdisk (before prune):"
+          du -ah "$TMP/stock_ramdisk/root_stock" | sort -hr | head -n 40 || true
+
+          # heuristics prune
+          PRUNE_PATTERNS=(
+            "usr/share/doc"
+            "usr/share/man"
+            "var/log"
+            "usr/lib/debug"
+            "lib/debug"
+            "*/.git"
+            "*/.gitignore"
+            "*.dbg"
+            "*.pdb"
+            "*.log"
+            "etc/firmware"
+            "vendor/bin/*_tests"
+            "vendor/lib*/hw/*_test*.so"
+            "usr/lib/python*/test"
+            "usr/lib/python*/tests"
+          )
+
+          for p in "${PRUNE_PATTERNS[@]}"; do
+            echo "Pruning pattern: $p"
+            find "$TMP/stock_ramdisk/root_stock" -path "*/$p" -prune -exec rm -rf {} + 2>/dev/null || true
+          done
+
+          # function to repack and try mkbootimg
+          repack_and_check() {
+            cd "$TMP/stock_ramdisk/root_stock"
+            find . | cpio -o -H newc --owner root:root > "$TMP/new_ramdisk.cpio"
+            lz4 -q "$TMP/new_ramdisk.cpio" "$TMP/new_ramdisk.cpio.lz4"
+            NEW_SIZE=$(stat -c '%s' "$TMP/new_ramdisk.cpio.lz4") || NEW_SIZE=999999999
+            echo "Compressed ramdisk size: $NEW_SIZE bytes (limit: $LIMIT_BYTES)"
+            RUNNER_MKBOOTIMG="$(command -v mkbootimg)"
+            if [ -z "$RUNNER_MKBOOTIMG" ]; then
+              echo "::warning::mkbootimg not found in PATH"
+              return 1
+            fi
+            "$RUNNER_MKBOOTIMG" \
+              --vendor_boot "$OUT" \
+              --header_version 4 \
+              --pagesize 4096 \
+              --base 0x40000000 \
+              --vendor_cmdline "bootopt=64S3,32N2,64N2 erofs.reserved_pages=64" \
+              --vendor_ramdisk "$TMP/new_ramdisk.cpio.lz4" \
+              --dtb "$UNPACK/dtb" \
+              --vendor_bootconfig "$UNPACK/bootconfig" || true
+            if [ -f "$OUT" ]; then
+              IMG_SZ=$(stat -c '%s' "$OUT") || IMG_SZ=999999999
+              echo "vendor_boot.img produced size: $IMG_SZ bytes"
+            else
+              echo "mkbootimg did not produce $OUT"
+            fi
+          }
+
+          # first attempt
+          repack_and_check
+
+          if [ -f "$TMP/new_ramdisk.cpio.lz4" ]; then
+            NEW_SIZE=$(stat -c '%s' "$TMP/new_ramdisk.cpio.lz4")
+          else
+            NEW_SIZE=$((LIMIT_BYTES+1))
+          fi
+
+          if [ "$NEW_SIZE" -gt "$LIMIT_BYTES" ] || [ ! -f "$OUT" ] || [ "$(stat -c '%s' "$OUT" 2>/dev/null || echo 999999999)" -gt "$LIMIT_BYTES" ]; then
+            echo "Compressed ramdisk or vendor_boot still too large; removing largest files iteratively..."
+            COUNT=0
+            while true; do
+              LARGE_FILE=$(find "$TMP/stock_ramdisk/root_stock" -type f -print0 | xargs -0 du -b | sort -nr | head -n1 | awk '{print $2}')
+              [ -z "$LARGE_FILE" ] && break
+              echo "Removing largest: $LARGE_FILE ($(du -h "$LARGE_FILE"))"
+              rm -f "$LARGE_FILE"
+              repack_and_check
+              IMG_SZ=$(stat -c '%s' "$OUT" 2>/dev/null || echo 999999999)
+              NEW_SIZE=$(stat -c '%s' "$TMP/new_ramdisk.cpio.lz4" 2>/dev/null || echo 999999999)
+              if [ "$NEW_SIZE" -le "$LIMIT_BYTES" ] && [ "$IMG_SZ" -le "$LIMIT_BYTES" ]; then
+                echo "Success: vendor_boot fits under limit"
+                break
+              fi
+              COUNT=$((COUNT+1))
+              if [ "$COUNT" -gt 50 ]; then
+                echo "Reached iteration limit, aborting iterative prune"
+                break
+              fi
+            done
+          fi
+
+          if [ -f "$OUT" ]; then
+            echo "Final vendor_boot.img size: $(stat -c '%s' "$OUT") bytes"
+          else
+            echo "::error::Failed to produce vendor_boot.img within size limit"
+            exit 1
+          fi
+
+          unpack_bootimg --boot_img "$OUT" | tee "$GITHUB_WORKSPACE/vendor_boot_patched_info.txt" || true
+
+      - name: Collect artifacts
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/artifacts"
+          PRODUCT="$GITHUB_WORKSPACE/OrangeFox/out/target/product/rodin"
+
+          if [ -d "$PRODUCT" ]; then
+            find "$PRODUCT" \
+              -maxdepth 1 \
+              -type f \
+              \( -name "*.img" -o -name "*.zip" -o -name "*.txt" \) \
+              -exec cp -v {} "$GITHUB_WORKSPACE/artifacts/" \;
+          fi
+
+          cp -v "$GITHUB_WORKSPACE/orangefox-build.log" "$GITHUB_WORKSPACE/artifacts/" || true
+          cp -v "$GITHUB_WORKSPACE/vendor_boot_patched_info.txt" "$GITHUB_WORKSPACE/artifacts/" || true
+          cp -v "$GITHUB_WORKSPACE/product_files.txt" "$GITHUB_WORKSPACE/artifacts/" || true
+          cp -v "$GITHUB_WORKSPACE/recovery_cpio_path.txt" "$GITHUB_WORKSPACE/artifacts/" || true
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: orangefox-rodin
+          path: artifacts
+          if-no-files-found: warn
